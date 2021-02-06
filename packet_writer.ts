@@ -25,7 +25,7 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-import { copyBytes } from "./deps.ts";
+import { copy } from "./deps.ts";
 
 export class PacketWriter {
   private size: number;
@@ -49,7 +49,7 @@ export class PacketWriter {
       // https://stackoverflow.com/questions/2269063/buffer-growth-strategy
       const newSize = oldBuffer.length + (oldBuffer.length >> 1) + size;
       this.buffer = new Uint8Array(newSize);
-      copyBytes(this.buffer, oldBuffer);
+      copy(oldBuffer, this.buffer);
     }
   }
 
@@ -70,13 +70,13 @@ export class PacketWriter {
   }
 
   addCString(string?: string) {
-    //just write a 0 for empty or null strings
+    // just write a 0 for empty or null strings
     if (!string) {
       this._ensure(1);
     } else {
       const encodedStr = this.encoder.encode(string);
-      this._ensure(encodedStr.byteLength + 1); //+1 for null terminator
-      copyBytes(this.buffer, encodedStr, this.offset);
+      this._ensure(encodedStr.byteLength + 1); // +1 for null terminator
+      copy(encodedStr, this.buffer, this.offset);
       this.offset += encodedStr.byteLength;
     }
 
@@ -90,7 +90,7 @@ export class PacketWriter {
     }
 
     this._ensure(1);
-    copyBytes(this.buffer, this.encoder.encode(c), this.offset);
+    copy(this.encoder.encode(c), this.buffer, this.offset);
     this.offset++;
     return this;
   }
@@ -99,14 +99,14 @@ export class PacketWriter {
     string = string || "";
     const encodedStr = this.encoder.encode(string);
     this._ensure(encodedStr.byteLength);
-    copyBytes(this.buffer, encodedStr, this.offset);
+    copy(encodedStr, this.buffer, this.offset);
     this.offset += encodedStr.byteLength;
     return this;
   }
 
   add(otherBuffer: Uint8Array) {
     this._ensure(otherBuffer.length);
-    copyBytes(this.buffer, otherBuffer, this.offset);
+    copy(otherBuffer, this.buffer, this.offset);
     this.offset += otherBuffer.length;
     return this;
   }
@@ -116,17 +116,17 @@ export class PacketWriter {
     this.headerPosition = 0;
   }
 
-  //appends a header block to all the written data since the last
-  //subsequent header or to the beginning if there is only one data block
+  // appends a header block to all the written data since the last
+  // subsequent header or to the beginning if there is only one data block
   addHeader(code: number, last?: boolean) {
     const origOffset = this.offset;
     this.offset = this.headerPosition;
     this.buffer[this.offset++] = code;
-    //length is everything in this packet minus the code
+    // length is everything in this packet minus the code
     this.addInt32(origOffset - (this.headerPosition + 1));
-    //set next header position
+    // set next header position
     this.headerPosition = origOffset;
-    //make space for next header
+    // make space for next header
     this.offset = origOffset;
     if (!last) {
       this._ensure(5);

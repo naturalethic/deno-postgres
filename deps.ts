@@ -1,26 +1,6 @@
-export {
-  BufReader,
-  BufWriter
-} from "https://deno.land/std@v0.31.0/io/bufio.ts";
-
-export { copyBytes } from "https://deno.land/std@v0.31.0/io/util.ts";
-
-export {
-  assert,
-  assertEquals,
-  assertStrContains,
-  assertThrowsAsync
-} from "https://deno.land/std@v0.31.0/testing/asserts.ts";
-
-export {
-  runTests,
-  test,
-  TestFunction
-} from "https://deno.land/std@v0.31.0/testing/mod.ts";
-
-export {
-  Deferred,
-  deferred
-} from "https://deno.land/std@v0.31.0/util/async.ts";
-
-export { Hash } from "https://deno.land/x/checksum@1.0.1/mod.ts";
+export { BufReader, BufWriter } from "https://deno.land/std@0.85.0/io/bufio.ts";
+export { copy } from "https://deno.land/std@0.85.0/bytes/mod.ts";
+export { createHash } from "https://deno.land/std@0.85.0/hash/mod.ts";
+export { deferred, delay } from "https://deno.land/std@0.85.0/async/mod.ts";
+export { bold, yellow } from "https://deno.land/std@0.85.0/fmt/colors.ts";
+export type { Deferred } from "https://deno.land/std@0.85.0/async/mod.ts";

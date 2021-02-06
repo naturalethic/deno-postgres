@@ -1,16 +1,18 @@
-import { test, TestFunction } from "../deps.ts";
-import { Client } from "../client.ts";
+import type { Client } from "../client.ts";
 
-export function getTestClient(client: Client, defSetupQueries?: Array<string>) {
-  return async function testClient(
-    t: TestFunction,
-    setupQueries?: Array<string>
+export function getTestClient(
+  client: Client,
+  defSetupQueries?: Array<string>,
+) {
+  return function testClient(
+    t: Deno.TestDefinition["fn"],
+    setupQueries?: Array<string>,
   ) {
     const fn = async () => {
       try {
         await client.connect();
         for (const q of setupQueries || defSetupQueries || []) {
-          await client.query(q);
+          await client.queryArray(q);
         }
         await t();
       } finally {
@@ -18,6 +20,6 @@ export function getTestClient(client: Client, defSetupQueries?: Array<string>) {
       }
     };
     const name = t.name;
-    test({ fn, name });
+    Deno.test({ fn, name });
   };
 }

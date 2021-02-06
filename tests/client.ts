@@ -1,26 +1,41 @@
-import { test, assert, assertStrContains } from "../deps.ts";
 import { Client, PostgresError } from "../mod.ts";
-import { TEST_CONNECTION_PARAMS } from "./constants.ts";
+import { assertThrowsAsync } from "../test_deps.ts";
+import TEST_CONNECTION_PARAMS from "./config.ts";
 
-test(async function badAuthData() {
-  // TODO(bartlomieju): this fails on Travis because it trusts all connections to postgres
-  // figure out how to make it work
-  return;
+function getRandomString() {
+  return Math.random().toString(36).substring(7);
+}
 
+Deno.test("badAuthData", async function () {
   const badConnectionData = { ...TEST_CONNECTION_PARAMS };
-  badConnectionData.password += "foobar";
+  badConnectionData.password += getRandomString();
   const client = new Client(badConnectionData);
 
-  let thrown = false;
+  await assertThrowsAsync(
+    async (): Promise<void> => {
+      await client.connect();
+    },
+    PostgresError,
+    "password authentication failed for user",
+  )
+    .finally(async () => {
+      await client.end();
+    });
+});
 
-  try {
-    await client.connect();
-  } catch (e) {
-    thrown = true;
-    assert(e instanceof PostgresError);
-    assertStrContains(e.message, "password authentication failed for user");
-  } finally {
-    await client.end();
-  }
-  assert(thrown);
+Deno.test("startupError", async function () {
+  const badConnectionData = { ...TEST_CONNECTION_PARAMS };
+  badConnectionData.database += getRandomString();
+  const client = new Client(badConnectionData);
+
+  await assertThrowsAsync(
+    async (): Promise<void> => {
+      await client.connect();
+    },
+    PostgresError,
+    "does not exist",
+  )
+    .finally(async () => {
+      await client.end();
+    });
 });

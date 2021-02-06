@@ -1,52 +1,43 @@
 # deno-postgres
 
-[![Build Status](https://travis-ci.com/buildondata/deno-postgres.svg?branch=master)](https://travis-ci.com/buildondata/deno-postgres)
-[![Gitter chat](https://badges.gitter.im/gitterHQ/gitter.png)](https://gitter.im/deno-postgres/community)
+![Build Status](https://img.shields.io/github/workflow/status/denodrivers/postgres/ci?label=Build&logo=github&style=flat-square)
+[![Discord server](https://img.shields.io/discord/768918486575480863?color=blue&label=Ask%20for%20help%20here&logo=discord&style=flat-square)](https://discord.gg/HEdTCvZUSf)
+[![Manual](https://img.shields.io/github/v/release/denodrivers/postgres?color=orange&label=Manual&logo=deno&style=flat-square)](https://deno-postgres.com)
+[![Documentation](https://img.shields.io/github/v/release/denodrivers/postgres?color=yellow&label=Documentation&logo=deno&style=flat-square)](https://doc.deno.land/https/deno.land/x/postgres@v0.7.1/mod.ts)
+[![License](https://img.shields.io/github/license/denodrivers/postgres?color=yellowgreen&label=License&style=flat-square)](LICENSE)
 
 PostgreSQL driver for Deno.
 
 It's still work in progress, but you can take it for a test drive!
 
-`deno-postgres` is being developed based on excellent work of [node-postgres](https://github.com/brianc/node-postgres)
-and [pq](https://github.com/lib/pq).
-
-## To Do:
-
-- [x] connecting to database
-- [x] password handling:
-  - [x] cleartext
-  - [x] MD5
-- [x] DSN style connection parameters
-- [x] reading connection parameters from environmental variables
-- [x] termination of connection
-- [x] simple queries (no arguments)
-- [x] parsing Postgres data types to native TS types
-- [x] row description
-- [x] parametrized queries
-- [x] connection pooling
-- [x] parsing error response
-- [ ] SSL (waiting for Deno to support TLS)
-- [ ] tests, tests, tests
+`deno-postgres` is being developed based on excellent work of
+[node-postgres](https://github.com/brianc/node-postgres) and
+[pq](https://github.com/lib/pq).
 
 ## Example
 
 ```ts
 import { Client } from "https://deno.land/x/postgres/mod.ts";
 
-async function main() {
-  const client = new Client({
-    user: "user",
-    database: "test",
-    host: "localhost",
-    port: "5432"
-  });
-  await client.connect();
-  const result = await client.query("SELECT * FROM people;");
-  console.log(result.rows);
-  await client.end();
+const client = new Client({
+  user: "user",
+  database: "test",
+  hostname: "localhost",
+  port: 5432,
+});
+await client.connect();
+
+{
+  const result = await client.queryArray("SELECT ID, NAME FROM PEOPLE");
+  console.log(result.rows); // [[1, 'Carlos'], [2, 'John'], ...]
 }
 
-main();
+{
+  const result = await client.queryObject("SELECT ID, NAME FROM PEOPLE");
+  console.log(result.rows); // [{id: 1, name: 'Carlos'}, {id: 2, name: 'Johnru'}, ...]
+}
+
+await client.end();
 ```
 
 ## Docs
@@ -57,24 +48,18 @@ Docs are available at [https://deno-postgres.com/](https://deno-postgres.com/)
 
 When contributing to repository make sure to:
 
-a) open an issue for what you're working on
-
-b) use strict mode in TypeScript code (use `tsconfig.test.json` configuration)
-
-```shell
-$ deno run -c tsconfig.test.json -A test.ts
-```
-
-c) properly format code using `deno fmt`
-
-```shell
-$ deno fmt -- --check
-```
+1. All features and fixes must have an open issue in order to be discussed
+2. All public interfaces must be typed and have a corresponding JS block
+   explaining their usage
+3. All code must pass the format and lint checks enforced by `deno fmt` and
+   `deno lint` respectively
 
 ## License
 
-There are substantial parts of this library based on other libraries. They have preserved their individual licenses and copyrights.
+There are substantial parts of this library based on other libraries. They have
+preserved their individual licenses and copyrights.
 
 Eveything is licensed under the MIT License.
 
-All additional work is copyright 2018 - 2019 — Bartłomiej Iwańczuk — All rights reserved.
+All additional work is copyright 2018 - 2021 — Bartłomiej Iwańczuk and Steven
+Guerrero — All rights reserved.

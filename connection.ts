@@ -26,23 +26,36 @@
  * SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-import { BufReader, BufWriter, Hash } from "./deps.ts";
-import { PacketWriter } from "./packet_writer.ts";
+import { bold, yellow } from "./deps.ts";
+import { BufReader, BufWriter } from "./deps.ts";
+import { DeferredStack } from "./deferred.ts";
 import { hashMd5Password, readUInt32BE } from "./utils.ts";
 import { PacketReader } from "./packet_reader.ts";
-import { QueryConfig, QueryResult, Query } from "./query.ts";
-import { parseError } from "./error.ts";
-import { ConnectionParams } from "./connection_params.ts";
+import { PacketWriter } from "./packet_writer.ts";
+import { parseError, parseNotice } from "./warning.ts";
+import {
+  Query,
+  QueryArrayResult,
+  QueryConfig,
+  QueryObjectResult,
+  QueryResult,
+} from "./query.ts";
+import type { ConnectionParams } from "./connection_params.ts";
+
+export enum ResultType {
+  ARRAY,
+  OBJECT,
+}
 
 export enum Format {
   TEXT = 0,
-  BINARY = 1
+  BINARY = 1,
 }
 
 enum TransactionStatus {
   Idle = "I",
   IdleInTransaction = "T",
-  InFailedTransaction = "E"
+  InFailedTransaction = "E",
 }
 
 export class Message {
@@ -51,7 +64,7 @@ export class Message {
   constructor(
     public type: string,
     public byteCount: number,
-    public body: Uint8Array
+    public body: Uint8Array,
   ) {
     this.reader = new PacketReader(body);
   }
@@ -65,7 +78,7 @@ export class Column {
     public typeOid: number,
     public columnLength: number,
     public typeModifier: number,
-    public format: Format
+    public format: Format,
   ) {}
 }
 
@@ -73,6 +86,9 @@ export class RowDescription {
   constructor(public columnCount: number, public columns: Column[]) {}
 }
 
+//TODO
+//Refactor properties to not be lazily initialized
+//or to handle their undefined value
 export class Connection {
   private conn!: Deno.Conn;
 
@@ -86,6 +102,10 @@ export class Connection {
   private _pid?: number;
   private _secretKey?: number;
   private _parameters: { [key: string]: string } = {};
+  private _queryLock: DeferredStack<undefined> = new DeferredStack(
+    1,
+    [undefined],
+  );
 
   constructor(private connParams: ConnectionParams) {}
 
@@ -109,12 +129,11 @@ export class Connection {
     writer.addInt16(3).addInt16(0);
     const connParams = this.connParams;
     // TODO: recognize other parameters
-    (["user", "database", "application_name"] as Array<
-      keyof ConnectionParams
-    >).forEach(function(key) {
-      const val = connParams[key];
-      writer.addCString(key).addCString(val);
-    });
+    writer.addCString("user").addCString(connParams.user);
+    writer.addCString("database").addCString(connParams.database);
+    writer.addCString("application_name").addCString(
+      connParams.applicationName,
+    );
 
     // eplicitly set utf-8 encoding
     writer.addCString("client_encoding").addCString("'utf-8'");
@@ -135,13 +154,11 @@ export class Connection {
   }
 
   async startup() {
-    const { host, port } = this.connParams;
-    this.conn = await Deno.connect({
-      port: parseInt(port, 10),
-      hostname: host
-    });
+    const { port, hostname } = this.connParams;
+    this.conn = await Deno.connect({ port, hostname });
 
     this.bufReader = new BufReader(this.conn);
+
     this.bufWriter = new BufWriter(this.conn);
     this.packetWriter = new PacketWriter();
 
@@ -156,6 +173,10 @@ export class Connection {
     while (true) {
       msg = await this.readMessage();
       switch (msg.type) {
+        // Connection error (wrong database or user)
+        case "E":
+          await this._processError(msg, false);
+          break;
         // backend key data
         case "K":
           this._processBackendKeyData(msg);
@@ -175,22 +196,39 @@ export class Connection {
   }
 
   async handleAuth(msg: Message) {
+    switch (msg.type) {
+      case "E":
+        await this._processError(msg, false);
+    }
+
     const code = msg.reader.readInt32();
     switch (code) {
+      // pass
       case 0:
-        // pass
         break;
+      // cleartext password
       case 3:
-        // cleartext password
         await this._authCleartext();
         await this._readAuthResponse();
         break;
-      case 5:
-        // md5 password
+      // md5 password
+      case 5: {
         const salt = msg.reader.readBytes(4);
         await this._authMd5(salt);
         await this._readAuthResponse();
         break;
+      }
+      case 7: {
+        throw new Error(
+          "Database server expected gss authentication, which is not supported at the moment",
+        );
+      }
+      // scram-sha-256 password
+      case 10: {
+        throw new Error(
+          "Database server expected scram-sha-256 authentication, which is not supported at the moment",
+        );
+      }
       default:
         throw new Error(`Unknown auth message code ${code}`);
     }
@@ -230,7 +268,7 @@ export class Connection {
     const password = hashMd5Password(
       this.connParams.password,
       this.connParams.user,
-      salt
+      salt,
     );
     const buffer = this.packetWriter.addCString(password).flush(0x70);
 
@@ -253,7 +291,7 @@ export class Connection {
   private _processReadyForQuery(msg: Message) {
     const txStatus = msg.reader.readByte();
     this._transactionStatus = String.fromCharCode(
-      txStatus
+      txStatus,
     ) as TransactionStatus;
   }
 
@@ -262,14 +300,17 @@ export class Connection {
 
     if (msg.type !== "Z") {
       throw new Error(
-        `Unexpected message type: ${msg.type}, expected "Z" (ReadyForQuery)`
+        `Unexpected message type: ${msg.type}, expected "Z" (ReadyForQuery)`,
       );
     }
 
     this._processReadyForQuery(msg);
   }
 
-  private async _simpleQuery(query: Query): Promise<QueryResult> {
+  private async _simpleQuery(
+    query: Query,
+    type: ResultType,
+  ): Promise<QueryResult> {
     this.packetWriter.clear();
 
     const buffer = this.packetWriter.addCString(query.text).flush(0x51);
@@ -277,16 +318,22 @@ export class Connection {
     await this.bufWriter.write(buffer);
     await this.bufWriter.flush();
 
-    const result = query.result;
+    let result;
+    if (type === ResultType.ARRAY) {
+      result = new QueryArrayResult(query);
+    } else {
+      result = new QueryObjectResult(query);
+    }
 
     let msg: Message;
 
     msg = await this.readMessage();
 
+    // Query startup message, executed only once
     switch (msg.type) {
       // row description
       case "T":
-        result.handleRowDescription(this._processRowDescription(msg));
+        result.loadColumnDescriptions(this._processRowDescription(msg));
         break;
       // no data
       case "n":
@@ -297,31 +344,38 @@ export class Connection {
         break;
       // notice response
       case "N":
-        // TODO:
-        console.log("TODO: handle notice");
+        result.warnings.push(await this._processNotice(msg));
         break;
       // command complete
       // TODO: this is duplicated in next loop
-      case "C":
+      case "C": {
+        const commandTag = this._readCommandTag(msg);
+        result.handleCommandComplete(commandTag);
         result.done();
         break;
+      }
       default:
         throw new Error(`Unexpected frame: ${msg.type}`);
     }
 
+    // Handle each row returned by the query
     while (true) {
       msg = await this.readMessage();
       switch (msg.type) {
         // data row
-        case "D":
+        case "D": {
           // this is actually packet read
           const foo = this._readDataRow(msg);
-          result.handleDataRow(foo);
+          result.insertRow(foo);
           break;
+        }
         // command complete
-        case "C":
+        case "C": {
+          const commandTag = this._readCommandTag(msg);
+          result.handleCommandComplete(commandTag);
           result.done();
           break;
+        }
         // ready for query
         case "Z":
           this._processReadyForQuery(msg);
@@ -329,6 +383,10 @@ export class Connection {
         // error response
         case "E":
           await this._processError(msg);
+          break;
+        // notice response
+        case "N":
+          result.warnings.push(await this._processNotice(msg));
           break;
         default:
           throw new Error(`Unexpected frame: ${msg.type}`);
@@ -350,9 +408,7 @@ export class Connection {
   async _sendBindMessage(query: Query) {
     this.packetWriter.clear();
 
-    const hasBinaryArgs = query.args.reduce((prev, curr) => {
-      return prev || curr instanceof Uint8Array;
-    }, false);
+    const hasBinaryArgs = query.args.some((arg) => arg instanceof Uint8Array);
 
     // bind statement
     this.packetWriter.clear();
@@ -363,7 +419,7 @@ export class Connection {
     if (hasBinaryArgs) {
       this.packetWriter.addInt16(query.args.length);
 
-      query.args.forEach(arg => {
+      query.args.forEach((arg) => {
         this.packetWriter.addInt16(arg instanceof Uint8Array ? 1 : 0);
       });
     } else {
@@ -372,7 +428,7 @@ export class Connection {
 
     this.packetWriter.addInt16(query.args.length);
 
-    query.args.forEach(arg => {
+    query.args.forEach((arg) => {
       if (arg === null || typeof arg === "undefined") {
         this.packetWriter.addInt32(-1);
       } else if (arg instanceof Uint8Array) {
@@ -421,10 +477,18 @@ export class Connection {
     await this.bufWriter.write(buffer);
   }
 
-  async _processError(msg: Message) {
+  async _processError(msg: Message, recoverable = true) {
     const error = parseError(msg);
-    await this._readReadyForQuery();
+    if (recoverable) {
+      await this._readReadyForQuery();
+    }
     throw error;
+  }
+
+  _processNotice(msg: Message) {
+    const warning = parseNotice(msg);
+    console.error(`${bold(yellow(warning.severity))}: ${warning.message}`);
+    return warning;
   }
 
   private async _readParseComplete() {
@@ -464,7 +528,7 @@ export class Connection {
 
   // TODO: I believe error handling here is not correct, shouldn't 'sync' message be
   //  sent after error response is received in prepared statements?
-  async _preparedQuery(query: Query): Promise<QueryResult> {
+  async _preparedQuery(query: Query, type: ResultType): Promise<QueryResult> {
     await this._sendPrepareMessage(query);
     await this._sendBindMessage(query);
     await this._sendDescribeMessage();
@@ -476,16 +540,22 @@ export class Connection {
     await this._readParseComplete();
     await this._readBindComplete();
 
-    const result = query.result;
+    let result;
+    if (type === ResultType.ARRAY) {
+      result = new QueryArrayResult(query);
+    } else {
+      result = new QueryObjectResult(query);
+    }
     let msg: Message;
     msg = await this.readMessage();
 
     switch (msg.type) {
       // row description
-      case "T":
+      case "T": {
         const rowDescription = this._processRowDescription(msg);
-        result.handleRowDescription(rowDescription);
+        result.loadColumnDescriptions(rowDescription);
         break;
+      }
       // no data
       case "n":
         break;
@@ -497,19 +567,24 @@ export class Connection {
         throw new Error(`Unexpected frame: ${msg.type}`);
     }
 
-    outerLoop: while (true) {
+    outerLoop:
+    while (true) {
       msg = await this.readMessage();
       switch (msg.type) {
         // data row
-        case "D":
+        case "D": {
           // this is actually packet read
           const rawDataRow = this._readDataRow(msg);
-          result.handleDataRow(rawDataRow);
+          result.insertRow(rawDataRow);
           break;
+        }
         // command complete
-        case "C":
+        case "C": {
+          const commandTag = this._readCommandTag(msg);
+          result.handleCommandComplete(commandTag);
           result.done();
           break outerLoop;
+        }
         // error response
         case "E":
           await this._processError(msg);
@@ -524,11 +599,17 @@ export class Connection {
     return result;
   }
 
-  async query(query: Query): Promise<QueryResult> {
-    if (query.args.length === 0) {
-      return await this._simpleQuery(query);
+  async query(query: Query, type: ResultType): Promise<QueryResult> {
+    await this._queryLock.pop();
+    try {
+      if (query.args.length === 0) {
+        return await this._simpleQuery(query, type);
+      } else {
+        return await this._preparedQuery(query, type);
+      }
+    } finally {
+      this._queryLock.push(undefined);
     }
-    return await this._preparedQuery(query);
   }
 
   private _processRowDescription(msg: Message): RowDescription {
@@ -545,7 +626,7 @@ export class Connection {
         msg.reader.readInt32(), // dataTypeOid
         msg.reader.readInt16(), // column
         msg.reader.readInt32(), // typeModifier
-        msg.reader.readInt16() // format
+        msg.reader.readInt16(), // format
       );
       columns.push(column);
     }
@@ -553,6 +634,9 @@ export class Connection {
     return new RowDescription(columnCount, columns);
   }
 
+  //TODO
+  //Research corner cases where _readDataRow can return null values
+  // deno-lint-ignore no-explicit-any
   _readDataRow(msg: Message): any[] {
     const fieldCount = msg.reader.readInt16();
     const row = [];
@@ -572,10 +656,14 @@ export class Connection {
     return row;
   }
 
+  _readCommandTag(msg: Message) {
+    return msg.reader.readString(msg.byteCount);
+  }
+
   async initSQL(): Promise<void> {
     const config: QueryConfig = { text: "select 1;", args: [] };
     const query = new Query(config);
-    await this.query(query);
+    await this.query(query, ResultType.ARRAY);
   }
 
   async end(): Promise<void> {
@@ -583,9 +671,5 @@ export class Connection {
     await this.bufWriter.write(terminationMessage);
     await this.bufWriter.flush();
     this.conn.close();
-    delete this.conn;
-    delete this.bufReader;
-    delete this.bufWriter;
-    delete this.packetWriter;
   }
 }

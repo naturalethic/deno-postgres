@@ -1,4 +1,4 @@
-import { Hash } from "./deps.ts";
+import { createHash } from "./deps.ts";
 
 export function readInt16BE(buffer: Uint8Array, offset: number): number {
   offset = offset >>> 0;
@@ -36,7 +36,7 @@ export function readUInt32BE(buffer: Uint8Array, offset: number): number {
 const encoder = new TextEncoder();
 
 function md5(bytes: Uint8Array): string {
-  return new Hash("md5").digest(bytes).hex();
+  return createHash("md5").update(bytes).toString("hex");
 }
 
 // https://www.postgresql.org/docs/current/protocol-flow.html
@@ -45,9 +45,9 @@ function md5(bytes: Uint8Array): string {
 //  concat('md5', md5(concat(md5(concat(password, username)), random-salt))).
 // (Keep in mind the md5() function returns its result as a hex string.)
 export function hashMd5Password(
-  username: string,
   password: string,
-  salt: Uint8Array
+  username: string,
+  salt: Uint8Array,
 ): string {
   const innerHash = md5(encoder.encode(password + username));
   const innerBytes = encoder.encode(innerHash);
@@ -62,7 +62,7 @@ export interface DsnResult {
   driver: string;
   user: string;
   password: string;
-  host: string;
+  hostname: string;
   port: string;
   database: string;
   params: {
@@ -71,25 +71,19 @@ export interface DsnResult {
 }
 
 export function parseDsn(dsn: string): DsnResult {
-  const url = new URL(dsn);
+  //URL object won't parse the URL if it doesn't recognize the protocol
+  //This line replaces the protocol with http and then leaves it up to URL
+  const [protocol, strippedUrl] = dsn.match(/(?:(?!:\/\/).)+/g) ?? ["", ""];
+  const url = new URL(`http:${strippedUrl}`);
 
   return {
-    // remove trailing colon
-    driver: url.protocol.slice(0, url.protocol.length - 1),
+    driver: protocol,
     user: url.username,
     password: url.password,
-    host: url.hostname,
+    hostname: url.hostname,
     port: url.port,
     // remove leading slash from path
     database: url.pathname.slice(1),
-    params: Object.fromEntries(url.searchParams.entries())
+    params: Object.fromEntries(url.searchParams.entries()),
   };
-}
-
-export function delay<T>(ms: number, value?: T): Promise<T> {
-  return new Promise<T>((resolve, reject) => {
-    setTimeout(() => {
-      resolve(value);
-    }, ms);
-  });
 }
